@@ -1,10 +1,13 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
 import { certificate, shifts, days } from './rules.mjs';
 const $ = id => document.getElementById(id);
-let client, profile;
+let client, profile, selectedRestaurant;
 const status = (message, error=false) => { $('status').hidden=false; $('status').textContent=message; $('status').classList.toggle('error',error); };
 const check = result => { if(result.error) throw result.error; return result.data; };
 const element = (tag,text) => { const e=document.createElement(tag); if(text!==undefined)e.textContent=text;return e; };
+const managerHome=element('section');
+managerHome.id='manager-home';managerHome.hidden=true;
+$('portal').insertBefore(managerHome,$('schedule'));
 const selections = parent => [...parent.querySelectorAll('input:checked')].map(x=>x.value);
 function shiftInputs(parent, name, chosen=[]) {
   shifts.forEach(shift=>{const label=element('label'),input=element('input');input.type='checkbox';input.name=name;input.value=shift;input.checked=chosen.includes(shift);label.append(input,document.createTextNode(shift));parent.append(label);});
@@ -28,13 +31,27 @@ async function deadline(){
  try {const result=check(await client.rpc('request_window',{day_requested:$('request-date').value}));$('deadline').textContent=`Schedule starts ${result.starts_on}. Requests close ${result.deadline_label} Central. ${result.open?'Requests are open.':'Requests are closed for this schedule.'}`;$('request-submit').disabled=!result.open;}catch(e){status(e.message,true);$('request-submit').disabled=true;}
 }
 async function managerReview(){
- const [peopleResult,availabilityResult,requestsResult]=await Promise.all([client.from('profiles').select('*'),client.from('availability').select('*'),client.from('time_off').select('*').order('requested_date')]);
+ const restaurantId=selectedRestaurant||profile.restaurant_id;
+ const [peopleResult,availabilityResult,requestsResult,scheduleResult]=await Promise.all([client.from('profiles').select('*').eq('restaurant_id',restaurantId),client.from('availability').select('*').eq('restaurant_id',restaurantId),client.from('time_off').select('*').eq('restaurant_id',restaurantId).order('requested_date'),client.from('schedules').select('*').eq('restaurant_id',restaurantId).order('starts_on',{ascending:false}).limit(1)]);
+ if(profile.role==='owner'&&selectedRestaurant!==restaurantId)return;
  const people=check(peopleResult),availability=check(availabilityResult),requests=check(requestsResult),names=Object.fromEntries(people.map(p=>[p.id,p.full_name]));const root=$('manager-content');root.replaceChildren();root.append(element('h3','Regular availability'));
- people.forEach(p=>{const a=availability.find(x=>x.employee_id===p.id),box=element('div');box.className='card';box.append(element('strong',p.full_name));if(!a)box.append(element('p','Not submitted'));else{days.forEach((d,i)=>box.append(element('p',d+': '+(a.unavailable[i].join(', ')||'No restrictions'))));box.append(element('small',`Signed by ${a.signature} · ${a.certified_at}`),element('small',a.certificate_text));}root.append(box);});
+ const published=check(scheduleResult);if(published.length){const section=element('details'),summary=element('summary','Full team schedule · starts '+published[0].starts_on);section.append(summary);published[0].schedule_data.weeks.forEach(week=>{const wrap=element('div'),table=element('table'),head=element('thead'),body=element('tbody'),row=element('tr');wrap.className='tablewrap';week.headers.forEach(value=>row.append(element('th',value)));head.append(row);week.rows.forEach(values=>{const tr=element('tr');values.forEach(value=>tr.append(element('td',value)));body.append(tr);});table.append(head,body);wrap.append(table);section.append(wrap);});root.prepend(section);}
+ people.filter(p=>p.role!=='owner').forEach(p=>{const a=availability.find(x=>x.employee_id===p.id),box=element('div');box.className='card';box.append(element('strong',p.full_name));if(!a)box.append(element('p','Not submitted'));else{days.forEach((d,i)=>box.append(element('p',d+': '+(a.unavailable[i].join(', ')||'No restrictions'))));box.append(element('small',`Signed by ${a.signature} · ${a.certified_at}`),element('small',a.certificate_text));}root.append(box);});
  root.append(element('h3','Time-off requests'));requests.forEach(r=>{const box=element('div');box.className='card';box.append(element('p',`${names[r.employee_id]||'Employee'} · ${r.requested_date} · ${r.shifts.join(', ')} · ${r.status}`),element('p',r.note));['approved','declined','pending'].forEach(value=>{if(r.status===value)return;const b=element('button','Mark '+value);b.type='button';b.onclick=async()=>{b.disabled=true;try{check(await client.from('time_off').update({status:value}).eq('id',r.id));await managerReview();await loadRequests();}catch(e){status(e.message,true);b.disabled=false;}};box.append(b);});root.append(box);});
+}
+async function ownerHome(){
+ const restaurants=check(await client.from('restaurants').select('*').order('name'));
+ selectedRestaurant=null;
+ managerHome.replaceChildren(element('h2','Your restaurants'),element('p','Choose a restaurant to view schedules, review regular availability, and approve or decline time-off requests.'));
+ const back=element('button','← All restaurants');back.type='button';back.onclick=()=>{selectedRestaurant=null;$('manager').hidden=true;managerHome.hidden=false;};$('manager').prepend(back);
+ restaurants.forEach(restaurant=>{const button=element('button'),logo=element('img');button.type='button';button.className='restaurant-card';logo.src=restaurant.id+'/logo.png';logo.alt='';button.append(logo,element('strong',restaurant.name),element('small','Schedules · Availability · Time-off requests'));button.onclick=async()=>{selectedRestaurant=restaurant.id;managerHome.hidden=true;$('manager').hidden=false;$('manager').querySelector('h2').textContent=restaurant.name;$('manager-content').textContent='Loading…';try{await managerReview();}catch(e){status(e.message,true);}};managerHome.append(button);});
+ $('restaurant').textContent='808 Manager Home';$('identity').textContent='Private manager access · All three restaurants';$('logo').hidden=true;$('portal').querySelector('nav').hidden=true;
+ ['schedule','availability','time-off','manager'].forEach(id=>$(id).hidden=true);
+ managerHome.hidden=false;$('login').hidden=true;$('portal').hidden=false;$('status').hidden=true;
 }
 async function openPortal(){
  profile=check(await client.from('profiles').select('*').eq('id',(await client.auth.getUser()).data.user.id).single());
+ if(profile.role==='owner'){await ownerHome();return;}
  const restaurant=check(await client.from('restaurants').select('*').eq('id',profile.restaurant_id).single());
  $('restaurant').textContent=restaurant.name;$('identity').textContent=profile.full_name;$('logo').src=restaurant.id+'/logo.png';$('logo').alt=restaurant.name+' logo';
  await Promise.all([loadSchedule(),loadAvailability(),loadRequests()]);$('login').hidden=true;$('portal').hidden=false;$('manager').hidden=profile.role!=='manager';if(profile.role==='manager')await managerReview();$('status').hidden=true;
