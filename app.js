@@ -1,0 +1,69 @@
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
+import { certificate, shifts, days } from './rules.mjs';
+const $ = id => document.getElementById(id);
+let client, profile;
+const status = (message, error=false) => { $('status').hidden=false; $('status').textContent=message; $('status').classList.toggle('error',error); };
+const check = result => { if(result.error) throw result.error; return result.data; };
+const element = (tag,text) => { const e=document.createElement(tag); if(text!==undefined)e.textContent=text;return e; };
+const selections = parent => [...parent.querySelectorAll('input:checked')].map(x=>x.value);
+function shiftInputs(parent, name, chosen=[]) {
+  shifts.forEach(shift=>{const label=element('label'),input=element('input');input.type='checkbox';input.name=name;input.value=shift;input.checked=chosen.includes(shift);label.append(input,document.createTextNode(shift));parent.append(label);});
+  parent.addEventListener('change',event=>{if(event.target.value==='All Day' && event.target.checked)parent.querySelectorAll('input').forEach(x=>{x.checked=x.value==='All Day';});else if(event.target.checked)parent.querySelector('input[value="All Day"]').checked=false;});
+}
+days.forEach((day,i)=>{const details=element('details'),summary=element('summary',day+' — shifts I cannot work');details.id='day-'+i;details.append(summary);shiftInputs(details,day);$('weekdays').append(details);});
+shiftInputs($('request-shifts'),'request');
+$('certification-text').textContent=certificate;
+async function busy(form, action){const button=form.querySelector('button');button.disabled=true;try{await action();}catch(e){status(e.message||'Unable to complete your request. Please try again.',true);}finally{button.disabled=false;}}
+async function loadSchedule(){
+ const schedules=check(await client.from('schedules').select('*').eq('restaurant_id',profile.restaurant_id).order('starts_on',{ascending:false}).limit(1));
+ const root=$('schedule-content');root.replaceChildren();
+ if(!schedules.length){root.textContent='Your next schedule has not been published yet.';return;}
+ const s=schedules[0];root.append(element('p','Schedule starting '+s.starts_on));
+ s.schedule_data.weeks.forEach(week=>{const row=week.rows.find(r=>r[0]===profile.full_name);if(!row)return;const grid=element('div');grid.className='grid';for(let i=1;i<=7;i++){const card=element('div');card.className='day';card.append(element('strong',week.headers[i]),element('span',row[i]||'—'));grid.append(card);}root.append(grid,element('p','Scheduled hours: '+row[8]));});
+}
+async function loadAvailability(){const a=check(await client.from('availability').select('*').eq('employee_id',profile.id).maybeSingle());if(a){days.forEach((_,i)=>$('day-'+i).querySelectorAll('input').forEach(x=>x.checked=(a.unavailable[i]||[]).includes(x.value)));$('last-saved').textContent='Last finalized: '+new Date(a.certified_at).toLocaleString('en-US',{timeZone:'America/Chicago'})+' Central';} $('certification').checked=false;$('signature').value='';}
+async function loadRequests(){const rows=check(await client.from('time_off').select('*').eq('employee_id',profile.id).order('requested_date'));const root=$('requests');root.replaceChildren();if(!rows.length)root.textContent='No requests submitted.';rows.forEach(row=>root.append(element('p',`${row.requested_date} · ${row.shifts.join(', ')} · ${row.status}`)));}
+async function deadline(){
+ if(!$('request-date').value)return;
+ try {const result=check(await client.rpc('request_window',{day_requested:$('request-date').value}));$('deadline').textContent=`Schedule starts ${result.starts_on}. Requests close ${result.deadline_label} Central. ${result.open?'Requests are open.':'Requests are closed for this schedule.'}`;$('request-submit').disabled=!result.open;}catch(e){status(e.message,true);$('request-submit').disabled=true;}
+}
+async function managerReview(){
+ const [peopleResult,availabilityResult,requestsResult]=await Promise.all([client.from('profiles').select('*'),client.from('availability').select('*'),client.from('time_off').select('*').order('requested_date')]);
+ const people=check(peopleResult),availability=check(availabilityResult),requests=check(requestsResult),names=Object.fromEntries(people.map(p=>[p.id,p.full_name]));const root=$('manager-content');root.replaceChildren();root.append(element('h3','Regular availability'));
+ people.forEach(p=>{const a=availability.find(x=>x.employee_id===p.id),box=element('div');box.className='card';box.append(element('strong',p.full_name));if(!a)box.append(element('p','Not submitted'));else{days.forEach((d,i)=>box.append(element('p',d+': '+(a.unavailable[i].join(', ')||'No restrictions'))));box.append(element('small',`Signed by ${a.signature} · ${a.certified_at}`),element('small',a.certificate_text));}root.append(box);});
+ root.append(element('h3','Time-off requests'));requests.forEach(r=>{const box=element('div');box.className='card';box.append(element('p',`${names[r.employee_id]||'Employee'} · ${r.requested_date} · ${r.shifts.join(', ')} · ${r.status}`),element('p',r.note));['approved','declined','pending'].forEach(value=>{if(r.status===value)return;const b=element('button','Mark '+value);b.type='button';b.onclick=async()=>{b.disabled=true;try{check(await client.from('time_off').update({status:value}).eq('id',r.id));await managerReview();await loadRequests();}catch(e){status(e.message,true);b.disabled=false;}};box.append(b);});root.append(box);});
+}
+async function openPortal(){
+ profile=check(await client.from('profiles').select('*').eq('id',(await client.auth.getUser()).data.user.id).single());
+ const restaurant=check(await client.from('restaurants').select('*').eq('id',profile.restaurant_id).single());
+ $('restaurant').textContent=restaurant.name;$('identity').textContent=profile.full_name;$('logo').src=restaurant.id+'/logo.png';$('logo').alt=restaurant.name+' logo';
+ await Promise.all([loadSchedule(),loadAvailability(),loadRequests()]);$('login').hidden=true;$('portal').hidden=false;$('manager').hidden=profile.role!=='manager';if(profile.role==='manager')await managerReview();$('status').hidden=true;
+}
+$('availability-form').onsubmit=e=>{e.preventDefault();busy(e.target,async()=>{if(!$('certification').checked||!$('signature').value.trim())throw Error('Please certify and enter your full-name signature.');check(await client.rpc('save_availability',{restrictions:days.map((_,i)=>selections($('day-'+i))),signed_name:$('signature').value.trim(),accepted:$('certification').checked}));await loadAvailability();status('Your regular availability has been finalized.');});};
+$('request-form').onsubmit=e=>{e.preventDefault();busy(e.target,async()=>{const chosen=selections($('request-shifts'));if(!chosen.length)throw Error('Select at least one shift or All Day.');check(await client.from('time_off').insert({employee_id:profile.id,restaurant_id:profile.restaurant_id,requested_date:$('request-date').value,shifts:chosen,note:$('request-note').value.trim()}));e.target.reset();$('deadline').textContent='';await loadRequests();status('Request submitted for manager review.');});};
+$('request-date').onchange=deadline;
+$('refresh-manager').onclick=()=>managerReview().catch(e=>status(e.message,true));
+$('logout').onclick=async()=>{try{check(await client.auth.signOut());location.reload();}catch(e){status(e.message,true);}};
+const privateToken=new URLSearchParams(location.hash.slice(1)).get('employee');
+// Remove the access secret from the address bar and current history entry.
+if(privateToken)history.replaceState(null,'',location.pathname+location.search);
+if(!window.APP_CONFIG?.url||!window.APP_CONFIG?.key){
+ status('Your private employee page is awaiting activation. Please contact your manager.',true);
+}else{
+ client=createClient(window.APP_CONFIG.url,window.APP_CONFIG.key);
+ try{
+  if(privateToken){
+   // A newly opened link must take precedence over another employee's session.
+   check(await client.auth.signOut({scope:'local'}));
+   status('Opening your private employee page…');
+   const response=await fetch(window.APP_CONFIG.url.replace(/\/$/,'')+'/functions/v1/employee-link',{method:'POST',headers:{'Content-Type':'application/json',apikey:window.APP_CONFIG.key},body:JSON.stringify({token:privateToken}),cache:'no-store'});
+   const result=await response.json();
+   if(!response.ok)throw Error(result.error||'Unable to open your private link.');
+   check(await client.auth.setSession({access_token:result.access_token,refresh_token:result.refresh_token}));
+   await openPortal();
+  }else{
+   const {data,error}=await client.auth.getSession();if(error)throw error;if(data.session)await openPortal();
+  }
+ }catch(e){status(e.message,true);}
+ client.auth.onAuthStateChange(event=>{if(event==='SIGNED_OUT'){profile=null;$('portal').hidden=true;$('login').hidden=false;}});
+}
