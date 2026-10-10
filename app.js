@@ -21,13 +21,22 @@ days.forEach((day,i)=>{const details=element('details'),summary=element('summary
 shiftInputs($('request-shifts'),'request');
 $('certification-text').textContent=certificate;
 async function busy(form, action){const button=form.querySelector('button');button.disabled=true;try{await action();}catch(e){status(e.message||'Unable to complete your request. Please try again.',true);}finally{button.disabled=false;}}
+function fullSchedule(schedule, employeeName){
+ const section=element('section');section.className='full-schedule';
+ if(!schedule){section.append(element('p','The next schedule has not been published yet.'));return section;}
+ const weeks=schedule.schedule_data.weeks;
+ section.append(element('h3','Full two-week team schedule'),element('p','Schedule starting '+schedule.starts_on),element('small','Scroll each table sideways to see every day.'));
+ weeks.forEach((week,index)=>{const wrap=element('div'),table=element('table'),head=element('thead'),body=element('tbody'),row=element('tr');
+ const title='Week '+(index+1)+' · '+week.headers[1]+' – '+week.headers[7];
+ section.append(element('h4',title));wrap.className='tablewrap';wrap.tabIndex=0;wrap.setAttribute('role','region');wrap.setAttribute('aria-label',title);
+ table.append(element('caption',title));week.headers.forEach(value=>{const th=element('th',value);th.scope='col';row.append(th);});head.append(row);
+ week.rows.forEach(values=>{const tr=element('tr');if(employeeName&&values[0]===employeeName)tr.className='my-shifts';values.forEach((value,i)=>{const cell=element(i===0?'th':'td',value??'—');if(i===0)cell.scope='row';tr.append(cell);});body.append(tr);});table.append(head,body);wrap.append(table);section.append(wrap);
+ });return section;
+}
 async function loadSchedule(){
  const schedules=check(await client.from('schedules').select('*').eq('restaurant_id',profile.restaurant_id).order('starts_on',{ascending:false}).limit(1));
- const root=$('schedule-content');root.replaceChildren();
- if(!schedules.length){root.textContent='Your next schedule has not been published yet.';return;}
- const s=schedules[0];root.append(element('p','Schedule starting '+s.starts_on));
- if(!s.schedule_data.weeks.some(week=>week.rows.some(row=>row[0]===profile.full_name))){root.append(element('p','You are not listed on this published schedule yet. You can still submit your regular availability and future time-off requests.'));return;}
- s.schedule_data.weeks.forEach(week=>{const row=week.rows.find(r=>r[0]===profile.full_name);if(!row)return;const grid=element('div');grid.className='grid';for(let i=1;i<=7;i++){const card=element('div');card.className='day';card.append(element('strong',week.headers[i]),element('span',row[i]||'—'));grid.append(card);}root.append(grid,element('p','Scheduled hours: '+row[8]));});
+ const root=$('schedule-content');root.replaceChildren(fullSchedule(schedules[0],profile.full_name));
+ if(schedules.length&&!schedules[0].schedule_data.weeks.some(week=>week.rows.some(row=>row[0]===profile.full_name)))root.append(element('p','You are not listed on this published schedule yet. You can still view your restaurant’s full schedule and submit availability or future time-off requests.'));
 }
 async function loadAvailability(){const a=check(await client.from('availability').select('*').eq('employee_id',profile.id).maybeSingle());$('preferred-shifts').value=a?.preferred_shifts??'';$('preferred-hours').value=a?.preferred_hours??'';if(a){days.forEach((_,i)=>$('day-'+i).querySelectorAll('input').forEach(x=>x.checked=(a.unavailable[i]||[]).includes(x.value)));$('last-saved').textContent='Last finalized: '+new Date(a.certified_at).toLocaleString('en-US',{timeZone:'America/Chicago'})+' Central';} $('certification').checked=false;$('signature').value='';}
 async function loadRequests(){const rows=check(await client.from('time_off').select('*').eq('employee_id',profile.id).order('requested_date'));const root=$('requests');root.replaceChildren();if(!rows.length)root.textContent='No requests submitted.';rows.forEach(row=>root.append(element('p',`${row.requested_date} · ${row.shifts.join(', ')} · ${row.status}`)));}
@@ -40,7 +49,7 @@ async function managerReview(){
  const [peopleResult,availabilityResult,requestsResult,scheduleResult,directoryResult]=await Promise.all([client.from('profiles').select('*').eq('restaurant_id',restaurantId),client.from('availability').select('*').eq('restaurant_id',restaurantId),client.from('time_off').select('*').eq('restaurant_id',restaurantId).order('requested_date'),client.from('schedules').select('*').eq('restaurant_id',restaurantId).order('starts_on',{ascending:false}).limit(1),profile.role==='owner'?client.rpc('employee_directory',{store:restaurantId}):Promise.resolve({data:null})]);
  if(profile.role==='owner'&&selectedRestaurant!==restaurantId)return;
  const people=check(peopleResult),availability=check(availabilityResult),requests=check(requestsResult),names=Object.fromEntries(people.map(p=>[p.id,p.full_name]));const root=$('manager-content');root.replaceChildren();root.append(element('h3','Regular availability'));
- const published=check(scheduleResult);if(published.length){const section=element('details'),summary=element('summary','Full team schedule · starts '+published[0].starts_on);section.append(summary);published[0].schedule_data.weeks.forEach(week=>{const wrap=element('div'),table=element('table'),head=element('thead'),body=element('tbody'),row=element('tr');wrap.className='tablewrap';week.headers.forEach(value=>row.append(element('th',value)));head.append(row);week.rows.forEach(values=>{const tr=element('tr');values.forEach(value=>tr.append(element('td',value)));body.append(tr);});table.append(head,body);wrap.append(table);section.append(wrap);});root.prepend(section);}
+ const published=check(scheduleResult);root.prepend(fullSchedule(published[0]));
  people.filter(p=>p.role!=='owner').forEach(p=>{const a=availability.find(x=>x.employee_id===p.id),box=element('div');box.className='card';box.append(element('strong',p.full_name));if(!a)box.append(element('p','Not submitted'));else{box.append(element('p','Preferred shifts per week: '+(a.preferred_shifts??'Not specified')),element('p','Preferred hours per week: '+(a.preferred_hours??'Not specified')));days.forEach((d,i)=>box.append(element('p',d+': '+(a.unavailable[i].join(', ')||'No restrictions'))));box.append(element('small',`Signed by ${a.signature} · ${a.certified_at}`),element('small',a.certificate_text));}root.append(box);});
  root.append(element('h3','Time-off requests'));requests.forEach(r=>{const box=element('div');box.className='card';box.append(element('p',`${names[r.employee_id]||'Employee'} · ${r.requested_date} · ${r.shifts.join(', ')} · ${r.status}`),element('p',r.note));['approved','declined','pending'].forEach(value=>{if(r.status===value)return;const b=element('button','Mark '+value);b.type='button';b.onclick=async()=>{b.disabled=true;try{check(await client.from('time_off').update({status:value}).eq('id',r.id));await managerReview();await loadRequests();}catch(e){status(e.message,true);b.disabled=false;}};box.append(b);});root.append(box);});
  if(profile.role==='owner')root.prepend(employeeManagement(restaurantId,check(directoryResult)));
@@ -76,11 +85,12 @@ function employeeManagement(restaurantId,employees){
  return section;
 }
 async function ownerHome(){
- const restaurants=check(await client.from('restaurants').select('*').order('name'));
+ const [restaurantResult,scheduleResult]=await Promise.all([client.from('restaurants').select('*').order('name'),client.from('schedules').select('*').order('starts_on',{ascending:false})]);
+ const restaurants=check(restaurantResult),published=check(scheduleResult);
  selectedRestaurant=null;
- managerHome.replaceChildren(element('h2','Your restaurants'),element('p','Choose a restaurant to view schedules, review regular availability, and approve or decline time-off requests.'));
+ managerHome.replaceChildren(element('h2','Your restaurants'),element('p','View each restaurant’s full two-week schedule below. Select a restaurant to manage employees, review availability, and approve or decline time-off requests.'));
  const back=element('button','← All restaurants');back.type='button';back.onclick=()=>{selectedRestaurant=null;$('manager').hidden=true;managerHome.hidden=false;};$('manager').prepend(back);
- restaurants.forEach(restaurant=>{const button=element('button'),logo=element('img');button.type='button';button.className='restaurant-card';logo.src=restaurant.id+'/logo.png';logo.alt='';button.append(logo,element('strong',restaurant.name),element('small','Schedules · Availability · Time-off requests'));button.onclick=async()=>{selectedRestaurant=restaurant.id;managerHome.hidden=true;$('manager').hidden=false;$('manager').querySelector('h2').textContent=restaurant.name;$('manager-content').textContent='Loading…';try{await managerReview();}catch(e){status(e.message,true);}};managerHome.append(button);});
+ restaurants.forEach(restaurant=>{const button=element('button'),logo=element('img');button.type='button';button.className='restaurant-card';logo.src=restaurant.id+'/logo.png';logo.alt='';button.append(logo,element('strong',restaurant.name),element('small','Schedules · Availability · Time-off requests'));button.onclick=async()=>{selectedRestaurant=restaurant.id;managerHome.hidden=true;$('manager').hidden=false;$('manager').querySelector('h2').textContent=restaurant.name;$('manager-content').textContent='Loading…';try{await managerReview();}catch(e){status(e.message,true);}};const card=element('section');card.className='card';card.append(button,fullSchedule(published.find(s=>s.restaurant_id===restaurant.id)));managerHome.append(card);});
  $('restaurant').textContent='808 Manager Home';$('identity').textContent='Private manager access · All three restaurants';$('logo').hidden=true;$('portal').querySelector('nav').hidden=true;
  ['schedule','availability','time-off','manager'].forEach(id=>$(id).hidden=true);
  managerHome.hidden=false;$('login').hidden=true;$('portal').hidden=false;$('status').hidden=true;
