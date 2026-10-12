@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
 import { certificate, shifts, days } from './rules.mjs';
+import { staffing, shiftLabel } from './staffing.mjs';
 const $ = id => document.getElementById(id);
 let client, profile, selectedRestaurant;
 const status = (message, error=false) => { $('status').hidden=false; $('status').textContent=message; $('status').classList.toggle('error',error); };
@@ -33,9 +34,20 @@ function fullSchedule(schedule, employeeName){
  week.rows.forEach(values=>{const tr=element('tr');if(employeeName&&values[0]===employeeName)tr.className='my-shifts';values.forEach((value,i)=>{const cell=element(i===0?'th':'td',value??'—');if(i===0)cell.scope='row';tr.append(cell);});body.append(tr);});table.append(head,body);wrap.append(table);section.append(wrap);
  });return section;
 }
+function staffingRequirements(restaurantId){
+ const requirements=staffing[restaurantId];
+ if(!requirements)return null;
+ const section=element('section');section.className='staffing-requirements';
+ section.append(element('h3',requirements.name+' hours & staffing'),element('p','Recurring weekly coverage. Lunch end times are not specified. Close is 9 PM Tuesday–Saturday and 8 PM Sunday.'));
+ const grid=element('div');grid.className='grid';
+ requirements.days.forEach(day=>{const card=element('section');card.className='day';card.append(element('h4',day.day),element('p',day.closed?'Closed':day.open+'–'+day.close));
+ if(!day.closed){['lunch','dinner'].forEach(meal=>{card.append(element('strong',meal==='lunch'?'Lunch':'Dinner'));const list=element('ul');day[meal].forEach(shift=>list.append(element('li',shiftLabel(shift))));card.append(list);});}
+ grid.append(card);});section.append(grid);return section;
+}
 async function loadSchedule(){
  const schedules=check(await client.from('schedules').select('*').eq('restaurant_id',profile.restaurant_id).order('starts_on',{ascending:false}).limit(1));
  const root=$('schedule-content');root.replaceChildren(fullSchedule(schedules[0],profile.full_name));
+ const requirements=staffingRequirements(profile.restaurant_id);if(requirements)root.prepend(requirements);
  if(schedules.length&&!schedules[0].schedule_data.weeks.some(week=>week.rows.some(row=>row[0]===profile.full_name)))root.append(element('p','You are not listed on this published schedule yet. You can still view your restaurant’s full schedule and submit availability or future time-off requests.'));
 }
 async function loadAvailability(){const a=check(await client.from('availability').select('*').eq('employee_id',profile.id).maybeSingle());$('preferred-shifts').value=a?.preferred_shifts??'';$('preferred-hours').value=a?.preferred_hours??'';$('preferred-shifts-week2').value=(a?.workload_week2?a.workload_week2.shifts:a?.preferred_shifts)??'';$('preferred-hours-week2').value=(a?.workload_week2?a.workload_week2.hours:a?.preferred_hours)??'';if(a){[a.unavailable,a.unavailable_week2??a.unavailable].forEach((week,w)=>days.forEach((_,i)=>$('day-'+(w*7+i)).querySelectorAll('input').forEach(x=>x.checked=(week[i]||[]).includes(x.value))));$('last-saved').textContent='Last finalized: '+new Date(a.certified_at).toLocaleString('en-US',{timeZone:'America/Chicago'})+' Central';} $('certification').checked=false;$('signature').value='';}
@@ -50,6 +62,7 @@ async function managerReview(){
  if(profile.role==='owner'&&selectedRestaurant!==restaurantId)return;
  const people=check(peopleResult),availability=check(availabilityResult),requests=check(requestsResult),names=Object.fromEntries(people.map(p=>[p.id,p.full_name]));const root=$('manager-content');root.replaceChildren();root.append(element('h3','Regular availability'));
  const published=check(scheduleResult);root.prepend(fullSchedule(published[0]));
+ const requirements=staffingRequirements(restaurantId);if(requirements)root.prepend(requirements);
  people.filter(p=>p.role!=='owner').forEach(p=>{const a=availability.find(x=>x.employee_id===p.id),box=element('div');box.className='card';box.append(element('strong',p.full_name));if(!a)box.append(element('p','Not submitted'));else{[a.unavailable,a.unavailable_week2??a.unavailable].forEach((week,w)=>{box.append(element('h4','Week '+(w+1)));const pref=w?(a.workload_week2??{shifts:a.preferred_shifts,hours:a.preferred_hours}):{shifts:a.preferred_shifts,hours:a.preferred_hours};box.append(element('p','Preferred shifts: '+(pref.shifts??'Not specified')),element('p','Preferred hours: '+(pref.hours??'Not specified')));days.forEach((d,i)=>box.append(element('p',d+': '+(week[i].join(', ')||'No restrictions'))));});box.append(element('small',`Signed by ${a.signature} · ${a.certified_at}`),element('small',a.certificate_text));}root.append(box);});
  root.append(element('h3','Time-off requests'));requests.forEach(r=>{const box=element('div');box.className='card';box.append(element('p',`${names[r.employee_id]||'Employee'} · ${r.requested_date} · ${r.shifts.join(', ')} · ${r.status}`),element('p',r.note));['approved','declined','pending'].forEach(value=>{if(r.status===value)return;const b=element('button','Mark '+value);b.type='button';b.onclick=async()=>{b.disabled=true;try{check(await client.from('time_off').update({status:value}).eq('id',r.id));await managerReview();await loadRequests();}catch(e){status(e.message,true);b.disabled=false;}};box.append(b);});root.append(box);});
  if(profile.role==='owner')root.prepend(employeeManagement(restaurantId,check(directoryResult)));
