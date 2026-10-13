@@ -1,6 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
 import { certificate, shifts, days } from './rules.mjs';
-import { staffing, shiftLabel } from './staffing.mjs';
+import { staffingForDate, shiftLabel } from './staffing.mjs';
 const $ = id => document.getElementById(id);
 let client, profile, selectedRestaurant;
 const status = (message, error=false) => { $('status').hidden=false; $('status').textContent=message; $('status').classList.toggle('error',error); };
@@ -34,8 +34,7 @@ function fullSchedule(schedule, employeeName){
  week.rows.forEach(values=>{const tr=element('tr');if(employeeName&&values[0]===employeeName)tr.className='my-shifts';values.forEach((value,i)=>{const cell=element(i===0?'th':'td',value??'—');if(i===0)cell.scope='row';tr.append(cell);});body.append(tr);});table.append(head,body);wrap.append(table);section.append(wrap);
  });return section;
 }
-function staffingRequirements(restaurantId){
- const requirements=staffing[restaurantId];
+function staffingRequirements(restaurantId, requirements=staffingForDate(restaurantId,new Intl.DateTimeFormat('en-CA',{timeZone:'America/Chicago',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()))){
  if(!requirements)return null;
  const section=element('section');section.className='staffing-requirements';
  section.append(element('h3',requirements.name+' hours & staffing'),element('p',requirements.description));
@@ -44,7 +43,9 @@ function staffingRequirements(restaurantId){
  requirements.days.forEach(day=>{const card=element('section');card.className='day';card.append(element('h4',day.day),element('p',day.closed?'Closed':day.open+'–'+day.close));
  if(!day.closed){['lunch','dinner'].forEach(meal=>{card.append(element('strong',meal==='lunch'?'Lunch':day.dinnerHomeGame?'Dinner · Regular Saturday':'Dinner'));const list=element('ul');day[meal].forEach(shift=>list.append(element('li',shiftLabel(shift))));if(!day[meal].length)list.append(element('li','No lunch service'));card.append(list);});
  if(day.dinnerHomeGame){card.append(element('strong','Dinner · Nebraska home-game day'));const list=element('ul');day.dinnerHomeGame.forEach(shift=>list.append(element('li',shiftLabel(shift))));card.append(list);}}
- grid.append(card);});section.append(grid);return section;
+ grid.append(card);});section.append(grid);
+ if(requirements.upcoming){section.append(element('h3',requirements.upcoming.label));section.append(staffingRequirements(restaurantId,{name:requirements.name,description:requirements.description,days:requirements.upcoming.days}));}
+ return section;
 }
 async function loadSchedule(){
  const schedules=check(await client.from('schedules').select('*').eq('restaurant_id',profile.restaurant_id).order('starts_on',{ascending:false}).limit(1));
