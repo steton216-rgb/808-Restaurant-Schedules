@@ -38,10 +38,12 @@ function staffingRequirements(restaurantId){
  const requirements=staffing[restaurantId];
  if(!requirements)return null;
  const section=element('section');section.className='staffing-requirements';
- section.append(element('h3',requirements.name+' hours & staffing'),element('p','Recurring weekly coverage. Lunch end times are not specified. Close is 9 PM Tuesday–Saturday and 8 PM Sunday.'));
+ section.append(element('h3',requirements.name+' hours & staffing'),element('p',requirements.description));
+ (requirements.notes||[]).forEach(note=>section.append(element('p',note)));
  const grid=element('div');grid.className='grid';
  requirements.days.forEach(day=>{const card=element('section');card.className='day';card.append(element('h4',day.day),element('p',day.closed?'Closed':day.open+'–'+day.close));
- if(!day.closed){['lunch','dinner'].forEach(meal=>{card.append(element('strong',meal==='lunch'?'Lunch':'Dinner'));const list=element('ul');day[meal].forEach(shift=>list.append(element('li',shiftLabel(shift))));card.append(list);});}
+ if(!day.closed){['lunch','dinner'].forEach(meal=>{card.append(element('strong',meal==='lunch'?'Lunch':day.dinnerHomeGame?'Dinner · Regular Saturday':'Dinner'));const list=element('ul');day[meal].forEach(shift=>list.append(element('li',shiftLabel(shift))));if(!day[meal].length)list.append(element('li','No lunch service'));card.append(list);});
+ if(day.dinnerHomeGame){card.append(element('strong','Dinner · Nebraska home-game day'));const list=element('ul');day.dinnerHomeGame.forEach(shift=>list.append(element('li',shiftLabel(shift))));card.append(list);}}
  grid.append(card);});section.append(grid);return section;
 }
 async function loadSchedule(){
