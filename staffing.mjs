@@ -3,7 +3,7 @@ const server = (start, end, count=1) => ({ role: 'Server', start, end, count });
 const bartender = (start, end) => ({ role: 'Bartender', start, end, count: 1 });
 const weekdayDinner = () => [server('3 PM', '8 PM'), server('5 PM', 'Close')];
 const pacificLunch = () => [server('10:30 AM', '2 PM'), server('11:30 AM', '3 PM')];
-const host = () => ({ role: 'Host', start: '5 PM', end: '9 PM', count: 1 });
+const host = () => ({ role: 'Host', start: '5 PM', end: '8 PM', count: 1 });
 const corkLunch = () => [server('10:30 AM', '2:30 PM'), server('11 AM', '3 PM')];
 const corkDinner = (weekend=false) => [server('3 PM', '7 PM'), server('4 PM', '8 PM', weekend?2:1), server('5 PM', 'Close'), bartender('5 PM', 'Close')];
 const corkDays = (november=false) => [
