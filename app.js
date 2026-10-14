@@ -1,7 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.57.4';
 import { certificate, shifts, days } from './rules.mjs';
 import { staffingForDate, shiftLabel } from './staffing.mjs';
-import { visibleSchedules, employeeScheduleName, isOpenShiftRow } from './schedule-view.mjs';
+import { centralDate, visibleSchedules, employeeScheduleName, isOpenShiftRow, employeeRows } from './schedule-view.mjs?v=20261013-my-schedule';
 const $ = id => document.getElementById(id);
 let client, profile, selectedRestaurant;
 const status = (message, error=false) => { $('status').hidden=false; $('status').textContent=message; $('status').classList.toggle('error',error); };
@@ -35,11 +35,35 @@ function fullSchedule(schedule, employeeName, title='Full two-week team schedule
  week.rows.filter(values=>manager||!isOpenShiftRow(values)).forEach(values=>{const tr=element('tr');if(employeeName&&(values[0]===employeeName||values[0]===employeeScheduleName(schedule,employeeName)))tr.className='my-shifts';values.forEach((value,i)=>{const cell=element(i===0?'th':'td',value??'—');if(i===0)cell.scope='row';tr.append(cell);});body.append(tr);});table.append(head,body);wrap.append(table);section.append(wrap);
  });return section;
 }
-function scheduleSet(schedules,employeeName,manager=false){
- const section=element('section'),selected=visibleSchedules(schedules);
- if(!selected.length)section.append(element('p','No current or upcoming schedule has been published yet.'));
- selected.forEach(item=>section.append(fullSchedule(item.schedule,employeeName,item.label,manager)));
- return section;
+const scheduleDisplays=new Map();
+let displayedDate=centralDate();
+function refreshScheduleDates(){
+ const today=centralDate();if(today===displayedDate)return;displayedDate=today;
+ scheduleDisplays.forEach((render,section)=>{if(section.isConnected)render();else scheduleDisplays.delete(section);});
+}
+setInterval(refreshScheduleDates,30000);
+document.addEventListener('visibilitychange',refreshScheduleDates);
+window.addEventListener('focus',refreshScheduleDates);
+function mySchedule(schedule,name,title){
+ const section=element('section');section.className='my-schedule';
+ section.append(element('h3',title),element('p','Schedule starting '+schedule.starts_on));
+ schedule.schedule_data.weeks.forEach((week,index)=>{
+  section.append(element('h4','Week '+(index+1)+' · '+week.headers[1]+' – '+week.headers[7]));
+  const rows=employeeRows(schedule,week,name);
+  if(!rows.length){section.append(element('p','You have no shifts listed for this week.'));return;}
+  rows.forEach(row=>{const grid=element('div');grid.className='grid';
+   week.headers.slice(1,8).forEach((day,i)=>{const card=element('section');card.className='day';const shift=element('p',row[i+1]||'OFF');shift.style.whiteSpace='pre-line';card.append(element('strong',day),shift);grid.append(card);});section.append(grid);
+   if(row[8]!==undefined)section.append(element('p','Weekly hours: '+row[8]));
+  });
+ });return section;
+}
+function scheduleSet(schedules,employeeName,manager=false,mine=false){
+ const section=element('section');
+ const render=()=>{const selected=visibleSchedules(schedules);section.replaceChildren();
+  if(!selected.length)section.append(element('p','No current or upcoming schedule has been published yet.'));
+  selected.forEach(item=>section.append(mine?mySchedule(item.schedule,employeeName,item.label):fullSchedule(item.schedule,employeeName,item.label,manager)));
+ };
+ render();scheduleDisplays.set(section,render);return section;
 }
 function staffingRequirements(restaurantId, requirements=staffingForDate(restaurantId,new Intl.DateTimeFormat('en-CA',{timeZone:'America/Chicago',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()))){
  if(!requirements)return null;
@@ -56,9 +80,11 @@ function staffingRequirements(restaurantId, requirements=staffingForDate(restaur
 }
 async function loadSchedule(){
  const schedules=check(await client.from('schedules').select('*').eq('restaurant_id',profile.restaurant_id).order('starts_on',{ascending:false}));
- const root=$('schedule-content');root.replaceChildren(scheduleSet(schedules,profile.full_name));
- const selected=visibleSchedules(schedules);
- if(selected.length&&!selected.some(({schedule})=>schedule.schedule_data.weeks.some(week=>week.rows.some(row=>row[0]===profile.full_name||row[0]===employeeScheduleName(schedule,profile.full_name)))))root.append(element('p','You are not listed on the current or upcoming schedule yet. You can still view your restaurant’s schedules and submit availability or future time-off requests.'));
+ const root=$('schedule-content'),label=element('label','Schedule view'),select=element('select'),display=element('div');
+ select.id='schedule-view';label.htmlFor=select.id;
+ [['mine','My Schedule'],['team','Full Team Schedule']].forEach(([value,text])=>{const option=element('option',text);option.value=value;select.append(option);});
+ const render=()=>display.replaceChildren(scheduleSet(schedules,profile.full_name,false,select.value==='mine'));
+ select.onchange=render;root.replaceChildren(label,select,element('small','My Schedule shows only your shifts. Schedule dates update automatically in Central time.'),display);render();
 }
 async function loadAvailability(){const a=check(await client.from('availability').select('*').eq('employee_id',profile.id).maybeSingle());$('preferred-shifts').value=a?.preferred_shifts??'';$('preferred-hours').value=a?.preferred_hours??'';$('preferred-shifts-week2').value=(a?.workload_week2?a.workload_week2.shifts:a?.preferred_shifts)??'';$('preferred-hours-week2').value=(a?.workload_week2?a.workload_week2.hours:a?.preferred_hours)??'';if(a){[a.unavailable,a.unavailable_week2??a.unavailable].forEach((week,w)=>days.forEach((_,i)=>$('day-'+(w*7+i)).querySelectorAll('input').forEach(x=>x.checked=(week[i]||[]).includes(x.value))));$('last-saved').textContent='Last finalized: '+new Date(a.certified_at).toLocaleString('en-US',{timeZone:'America/Chicago'})+' Central';} $('certification').checked=false;$('signature').value='';}
 async function loadRequests(){const rows=check(await client.from('time_off').select('*').eq('employee_id',profile.id).order('requested_date'));const root=$('requests');root.replaceChildren();if(!rows.length)root.textContent='No requests submitted.';rows.forEach(row=>root.append(element('p',`${row.requested_date} · ${row.shifts.join(', ')} · ${row.status}`)));}
