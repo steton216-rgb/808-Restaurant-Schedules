@@ -16,3 +16,7 @@ export function employeeScheduleName(schedule,name) {
   return schedule.schedule_data.employee_aliases?.[name]||name;
 }
 export function isOpenShiftRow(row) {return /^OPEN(?:\s|$)/i.test(String(row[0]));}
+export function employeeRows(schedule,week,name) {
+  const canonical=employeeScheduleName(schedule,name);
+  return week.rows.filter(row=>!isOpenShiftRow(row)&&(row[0]===name||row[0]===canonical));
+}
