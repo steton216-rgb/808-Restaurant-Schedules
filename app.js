@@ -50,6 +50,29 @@ async function deadline(){
  if(!$('request-date').value)return;
  try {const result=check(await client.rpc('request_window',{day_requested:$('request-date').value}));$('deadline').textContent=`Schedule starts ${result.starts_on}. Requests close ${result.deadline_label} Central. ${result.open?'Requests are open.':'Requests are closed for this schedule.'}`;$('request-submit').disabled=!result.open;}catch(e){status(e.message,true);$('request-submit').disabled=true;}
 }
+const calendarViews=new Map();
+function timeOffCalendar(restaurantId,requests,names){
+ const section=element('section');section.className='time-off-calendar card';section.id='time-off-calendar';
+ const today=centralToday();let view=calendarViews.get(restaurantId)||{month:today.slice(0,7),day:today};calendarViews.set(restaurantId,view);
+ const render=()=>{
+ section.replaceChildren(element('h3','Time-off calendar'),element('p','Daily counts: req = requested, pend = pending, appr = approved, decl = declined. Select a day to review employees and shifts. Past requests are hidden.'));
+ const toolbar=element('div');toolbar.className='calendar-toolbar';
+ const previous=element('button','←'),next=element('button','→'),current=element('button','This month'),title=element('strong');
+ const first=new Date(view.month+'-01T00:00:00Z');title.textContent=first.toLocaleDateString('en-US',{month:'long',year:'numeric',timeZone:'UTC'});title.setAttribute('aria-live','polite');
+ previous.type=next.type=current.type='button';previous.setAttribute('aria-label','Previous month');next.setAttribute('aria-label','Next month');previous.disabled=view.month<=today.slice(0,7);
+ const move=delta=>{first.setUTCMonth(first.getUTCMonth()+delta);view.month=first.toISOString().slice(0,7);view.day=view.month===today.slice(0,7)?today:view.month+'-01';render();};previous.onclick=()=>move(-1);next.onclick=()=>move(1);current.onclick=()=>{view.month=today.slice(0,7);view.day=today;render();};toolbar.append(previous,title,next,current);section.append(toolbar);
+ const grid=element('div');grid.className='calendar-grid';['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].forEach(d=>grid.append(element('strong',d)));
+ const offset=(first.getUTCDay()+6)%7;for(let i=0;i<offset;i++){const blank=element('span');blank.setAttribute('aria-hidden','true');grid.append(blank);}
+ const total=new Date(Date.UTC(first.getUTCFullYear(),first.getUTCMonth()+1,0)).getUTCDate();
+ for(let n=1;n<=total;n++){const date=view.month+'-'+String(n).padStart(2,'0'),rows=requests.filter(r=>r.requested_date===date),count=state=>new Set(rows.filter(r=>!state||r.status===state).map(r=>r.employee_id)).size;
+ const button=element('button');button.type='button';button.className='calendar-day';button.disabled=date<today;button.setAttribute('aria-pressed',String(view.day===date));button.setAttribute('aria-label',date+': '+count()+' requested, '+count('pending')+' pending, '+count('approved')+' approved, '+count('declined')+' declined');button.append(element('strong',n));
+ if(rows.length){[['','requested'],['pending','pending'],['approved','approved'],['declined','declined']].forEach(([state,label])=>{if(state&&count(state)===0)return;const badge=element('small',count(state)+' '+({requested:'req',pending:'pend',approved:'appr',declined:'decl'}[label]));badge.title=count(state)+' '+label;badge.className='request-count '+(state||'total');button.append(badge);});}button.onclick=()=>{view.day=date;render();};grid.append(button);}
+ section.append(grid);const details=element('div');details.className='calendar-requests';details.setAttribute('aria-live','polite');details.append(element('h4','Requests for '+view.day));
+ const selected=requests.filter(r=>r.requested_date===view.day);if(!selected.length)details.append(element('p','No time-off requests for this day.'));
+ selected.forEach(r=>{const box=element('div');box.className='card';box.append(element('strong',names[r.employee_id]||'Employee'),element('p','Shifts: '+r.shifts.join(', ')),element('p','Status: '+r.status));if(r.note)box.append(element('p',r.note));
+ [['approved','Approve'],['declined','Decline'],['pending','Mark pending']].forEach(([value,label])=>{if(r.status===value)return;const button=element('button',label);button.type='button';button.onclick=async()=>{const controls=[...section.querySelectorAll('button')];controls.forEach(b=>b.disabled=true);try{check(await client.from('time_off').update({status:value}).eq('id',r.id).eq('restaurant_id',restaurantId));await managerReview();}catch(e){status(e.message,true);render();}};box.append(button);});details.append(box);});section.append(details);
+ };render();return section;
+}
 async function managerReview(){
  approvedDays=check(await client.rpc('approved_schedule_time_off'))||[];
  const restaurantId=selectedRestaurant||profile.restaurant_id;
@@ -58,8 +81,9 @@ async function managerReview(){
  const people=check(peopleResult),availability=check(availabilityResult),requests=currentRequests(check(requestsResult)),names=Object.fromEntries(people.map(p=>[p.id,p.full_name]));const root=$('manager-content');root.replaceChildren();root.append(element('h3','Regular availability'));
  const published=check(scheduleResult);root.prepend(fullSchedule(published[0]));
  people.filter(p=>p.role!=='owner').forEach(p=>{const a=availability.find(x=>x.employee_id===p.id),box=element('div');box.className='card';box.append(element('strong',p.full_name));if(!a)box.append(element('p','Not submitted'));else{[a.unavailable,a.unavailable_week2??a.unavailable].forEach((week,w)=>{box.append(element('h4','Week '+(w+1)));const pref=w?(a.workload_week2??{shifts:a.preferred_shifts,hours:a.preferred_hours}):{shifts:a.preferred_shifts,hours:a.preferred_hours};box.append(element('p','Preferred shifts: '+(pref.shifts??'Not specified')),element('p','Preferred hours: '+(pref.hours??'Not specified')));days.forEach((d,i)=>box.append(element('p',d+': '+(week[i].join(', ')||'No restrictions'))));});box.append(element('small',`Signed by ${a.signature} · Last finalized: ${signedAt(a.certified_at)}`),element('small',a.certificate_text));}root.append(box);});
- root.append(element('h3','Time-off requests'));if(!requests.length)root.append(element('p','No current or upcoming time-off requests.'));requests.forEach(r=>{const box=element('div');box.className='card';box.append(element('p',`${names[r.employee_id]||'Employee'} · ${r.requested_date} · ${r.shifts.join(', ')} · ${r.status}`),element('p',r.note));['approved','declined','pending'].forEach(value=>{if(r.status===value)return;const b=element('button','Mark '+value);b.type='button';b.onclick=async()=>{b.disabled=true;try{check(await client.from('time_off').update({status:value}).eq('id',r.id));await managerReview();await loadRequests();}catch(e){status(e.message,true);b.disabled=false;}};box.append(b);});root.append(box);});
+
  if(profile.role==='owner')root.prepend(employeeManagement(restaurantId,check(directoryResult)));
+ root.prepend(timeOffCalendar(restaurantId,requests,names));
 }
 async function changeEmployee(restaurantId,action,employeeId,fullName){
  const {data,error}=await client.auth.getSession();if(error)throw error;
