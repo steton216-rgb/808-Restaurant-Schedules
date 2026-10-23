@@ -29,6 +29,7 @@ function fullSchedule(schedule, employeeName){
  const section=element('section');section.className='full-schedule';
  if(!schedule){section.append(element('p','The next schedule has not been published yet.'));return section;}
  const weeks=schedule.schedule_data.weeks;
+ if(schedule.restaurant_id==='twisted-cork')section.append(element('p','Sunday hours: 3:00–9:00 p.m.')); 
  section.append(element('small','Blue = approved time off. Approved shifts are labeled in each cell.'),element('h3','Full two-week team schedule'),element('p','Schedule starting '+schedule.starts_on),element('small','Scroll each table sideways to see every day.'));
  weeks.forEach((week,index)=>{const wrap=element('div'),table=element('table'),head=element('thead'),body=element('tbody'),row=element('tr');
  const title='Week '+(index+1)+' · '+week.headers[1]+' – '+week.headers[7];
@@ -44,9 +45,19 @@ async function loadSchedule(){
  const root=$('schedule-content');root.replaceChildren(fullSchedule(schedules[0],profile.full_name));
  if(schedules.length&&!schedules[0].schedule_data.weeks.some(week=>week.rows.some(row=>row[0]===profile.full_name)))root.append(element('p','You are not listed on this published schedule yet. You can still view your restaurant’s full schedule and submit availability or future time-off requests.'));
 }
+function showSundayHours(){
+ if(profile.restaurant_id!=='twisted-cork')return;
+ const note=element('p','Twisted Cork is open Sundays, 3:00–9:00 p.m. Set your Sunday availability for both Week 1 and Week 2.');note.className='status';$('weekdays').prepend(note);
+ [6,13].forEach(i=>{const day=$('day-'+i);day.querySelector('summary').textContent='Sunday · 3:00–9:00 p.m. — shifts I cannot work';labelSundayShifts(day,true);});
+ const hours=element('p','Sunday hours: 3:00–9:00 p.m.');$('restaurant').after(hours);
+}
+function labelSundayShifts(parent,sunday){
+ parent.querySelectorAll('input[type=checkbox]').forEach(input=>{const label=input.closest('label');label.hidden=sunday&&input.value==='Lunch';if(label.hidden&&parent.id==='request-shifts')input.checked=false;const text=sunday?({'3–7':'3:00–7:00 p.m.','5–Close':'5:00–9:00 p.m.','All Day':'All Sunday · 3:00–9:00 p.m.'}[input.value]||input.value):input.value;label.lastChild.textContent=text;});
+}
 async function loadAvailability(){const a=check(await client.from('availability').select('*').eq('employee_id',profile.id).maybeSingle());$('preferred-shifts').value=a?.preferred_shifts??'';$('preferred-hours').value=a?.preferred_hours??'';$('preferred-shifts-week2').value=(a?.workload_week2?a.workload_week2.shifts:a?.preferred_shifts)??'';$('preferred-hours-week2').value=(a?.workload_week2?a.workload_week2.hours:a?.preferred_hours)??'';if(a){[a.unavailable,a.unavailable_week2??a.unavailable].forEach((week,w)=>days.forEach((_,i)=>$('day-'+(w*7+i)).querySelectorAll('input').forEach(x=>x.checked=(week[i]||[]).includes(x.value))));$('last-saved').textContent='Last finalized: '+signedAt(a.certified_at);} $('certification').checked=false;$('signature').value='';}
 async function loadRequests(){const rows=currentRequests(check(await client.from('time_off').select('*').eq('employee_id',profile.id).order('requested_date')));const root=$('requests');root.replaceChildren();if(!rows.length)root.textContent='No current or upcoming time-off requests.';rows.forEach(row=>root.append(element('p',`${row.requested_date} · ${row.shifts.join(', ')} · ${row.status}`)));}
 async function deadline(){
+ if(profile?.restaurant_id==='twisted-cork'){const date=$('request-date').value;labelSundayShifts($('request-shifts'),!!date&&new Date(date+'T00:00:00Z').getUTCDay()===0);}
  if(!$('request-date').value)return;
  try {const result=check(await client.rpc('request_window',{day_requested:$('request-date').value}));$('deadline').textContent=`Schedule starts ${result.starts_on}. Requests close ${result.deadline_label} Central. ${result.open?'Requests are open.':'Requests are closed for this schedule.'}`;$('request-submit').disabled=!result.open;}catch(e){status(e.message,true);$('request-submit').disabled=true;}
 }
@@ -132,10 +143,11 @@ async function openPortal(){
  if(profile.role==='owner'){await ownerHome();return;}
  const restaurant=check(await client.from('restaurants').select('*').eq('id',profile.restaurant_id).single());
  $('restaurant').textContent=restaurant.name;$('identity').textContent=profile.full_name;$('logo').src=restaurant.id+'/logo.png';$('logo').alt=restaurant.name+' logo';
+ showSundayHours();
  await Promise.all([loadSchedule(),loadAvailability(),loadRequests()]);$('login').hidden=true;$('portal').hidden=false;$('manager').hidden=profile.role!=='manager';if(profile.role==='manager')await managerReview();$('status').hidden=true;
 }
 $('availability-form').onsubmit=e=>{e.preventDefault();busy(e.target,async()=>{if(!$('certification').checked||!$('signature').value.trim())throw Error('Please certify and enter your full-name signature.');check(await client.rpc('save_availability',{restrictions:days.map((_,i)=>selections($('day-'+i))),restrictions_week2:days.map((_,i)=>selections($('day-'+(7+i)))),preferences_week2:{shifts:$('preferred-shifts-week2').value===''?null:Number($('preferred-shifts-week2').value),hours:$('preferred-hours-week2').value===''?null:Number($('preferred-hours-week2').value)},signed_name:$('signature').value.trim(),accepted:$('certification').checked,preferred_shift_count:$('preferred-shifts').value===''?null:Number($('preferred-shifts').value),preferred_hour_count:$('preferred-hours').value===''?null:Number($('preferred-hours').value)}));await loadAvailability();status('Your regular availability has been finalized.');});};
-$('request-form').onsubmit=e=>{e.preventDefault();busy(e.target,async()=>{const chosen=selections($('request-shifts'));if(!chosen.length)throw Error('Select at least one shift or All Day.');check(await client.from('time_off').insert({employee_id:profile.id,restaurant_id:profile.restaurant_id,requested_date:$('request-date').value,shifts:chosen,note:$('request-note').value.trim()}));e.target.reset();$('deadline').textContent='';await loadRequests();status('Request submitted for manager review.');});};
+$('request-form').onsubmit=e=>{e.preventDefault();busy(e.target,async()=>{const chosen=selections($('request-shifts'));if(!chosen.length)throw Error('Select at least one shift or All Day.');check(await client.from('time_off').insert({employee_id:profile.id,restaurant_id:profile.restaurant_id,requested_date:$('request-date').value,shifts:chosen,note:$('request-note').value.trim()}));e.target.reset();if(profile.restaurant_id==='twisted-cork')labelSundayShifts($('request-shifts'),false);$('deadline').textContent='';await loadRequests();status('Request submitted for manager review.');});};
 $('request-date').onchange=deadline;
 $('refresh-manager').onclick=()=>managerReview().catch(e=>status(e.message,true));
 $('logout').onclick=async()=>{try{check(await client.auth.signOut());location.reload();}catch(e){status(e.message,true);}};
