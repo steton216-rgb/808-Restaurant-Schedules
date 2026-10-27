@@ -34,12 +34,23 @@ function visibleSchedules(schedules,today=centralToday()){
  const upcoming=sorted.find(s=>s.starts_on>today);
  return [{label:'Current schedule',schedule:current},{label:'Upcoming schedule',schedule:upcoming}].filter(item=>item.schedule);
 }
-function scheduleGroup(schedules,employeeName){
- const group=element('section');group.className='schedule-group';const visible=visibleSchedules(schedules);
- if(!visible.length)group.append(element('p','No current or upcoming schedule has been published yet.'));
- visible.forEach(({label,schedule})=>group.append(fullSchedule(schedule,employeeName,label)));
- return group;
+const scheduleRenders=new Map();
+function mySchedule(schedule,name,heading){
+ const section=element('section');section.className='my-schedule';section.append(element('h3',heading),element('p',schedule.starts_on+' through '+scheduleEnd(schedule.starts_on)));
+ const canonical=schedule.schedule_data.employee_aliases?.[name]||name;
+ schedule.schedule_data.weeks.forEach((week,w)=>{section.append(element('h4','Week '+(w+1)+' · '+week.headers[1]+' – '+week.headers[7]));const row=week.rows.find(r=>r[0]===canonical&&!/^OPEN(?:\s|$)/i.test(String(r[0])));if(!row){section.append(element('p','You have no shifts listed for this week.'));return;}
+ const grid=element('div');grid.className='grid';for(let i=1;i<=7;i++){const card=element('section'),shift=element('p',row[i]||'OFF');card.className='day';shift.style.whiteSpace='pre-line';if(/\b(?:time[ -]?off|approved[ -]?off|pto)\b/i.test(String(row[i])))card.classList.add('approved-personal-off');card.append(element('strong',week.headers[i]),shift);grid.append(card);}section.append(grid,element('p','Weekly hours: '+row[8]));
+ });return section;
 }
+function scheduleGroup(schedules,employeeName,mine=false){
+ const group=element('section');group.className='schedule-group';const label=element('label','Schedule period'),picker=element('select'),content=element('div');picker.className='schedule-period-picker';picker.setAttribute('aria-label','Schedule period');
+ const automatic=element('option','Current and upcoming schedules');automatic.value='automatic';picker.append(automatic);
+ [...schedules].sort((a,b)=>b.starts_on.localeCompare(a.starts_on)).forEach(schedule=>{const option=element('option',schedule.starts_on+' through '+scheduleEnd(schedule.starts_on));option.value=schedule.starts_on;picker.append(option);});label.append(picker);group.append(label,content);
+ const render=()=>{const visible=picker.value==='automatic'?visibleSchedules(schedules):schedules.filter(s=>s.starts_on===picker.value).map(schedule=>({label:'Selected schedule',schedule}));content.replaceChildren();if(!visible.length)content.append(element('p','No current or upcoming schedule has been published yet. Choose a published period above to view it.'));visible.forEach(({label,schedule})=>content.append(mine?mySchedule(schedule,employeeName,label):fullSchedule(schedule,employeeName,label)));};picker.onchange=render;render();scheduleRenders.set(group,()=>{if(picker.value==='automatic')render();});return group;
+}
+let scheduleDisplayDay=centralToday();
+function refreshScheduleDay(){const day=centralToday();if(day===scheduleDisplayDay)return;scheduleDisplayDay=day;for(const [group,render] of scheduleRenders){if(!group.isConnected)scheduleRenders.delete(group);else render();}}
+setInterval(refreshScheduleDay,30000);window.addEventListener('focus',refreshScheduleDay);document.addEventListener('visibilitychange',refreshScheduleDay);
 function fullSchedule(schedule, employeeName, heading='Full two-week team schedule'){
  const section=element('section');section.className='full-schedule';
  if(!schedule){section.append(element('p','The next schedule has not been published yet.'));return section;}
@@ -58,6 +69,7 @@ function fullSchedule(schedule, employeeName, heading='Full two-week team schedu
 }
 async function loadSchedule(){
  const schedules=check(await client.from('schedules').select('*').eq('restaurant_id',profile.restaurant_id).order('starts_on',{ascending:false}));
+ $('my-schedule-content').replaceChildren(scheduleGroup(schedules,profile.full_name,true));
  const root=$('schedule-content');root.replaceChildren(scheduleGroup(schedules,profile.full_name));
  if(visibleSchedules(schedules).length&&!visibleSchedules(schedules).some(({schedule})=>schedule.schedule_data.weeks.some(week=>week.rows.some(row=>row[0]===(schedule.schedule_data.employee_aliases?.[profile.full_name]||profile.full_name)))))root.append(element('p','You are not listed on this published schedule yet. You can still view your restaurant’s full schedule and submit availability or future time-off requests.'));
 }
@@ -150,7 +162,7 @@ async function ownerHome(){
  const back=element('button','← All restaurants');back.type='button';back.onclick=()=>{selectedRestaurant=null;$('manager').hidden=true;managerHome.querySelectorAll('.schedule-group').forEach((view,i)=>view.replaceWith(scheduleGroup(published.filter(s=>s.restaurant_id===restaurants[i].id))));managerHome.hidden=false;};$('manager').prepend(back);
  restaurants.forEach(restaurant=>{const button=element('button'),logo=element('img');button.type='button';button.className='restaurant-card';logo.src=restaurant.id+'/logo.png';logo.alt='';button.append(logo,element('strong',restaurant.name),element('small','Schedules · Availability · Time-off requests'));button.onclick=async()=>{selectedRestaurant=restaurant.id;managerHome.hidden=true;$('manager').hidden=false;$('manager').querySelector('h2').textContent=restaurant.name;$('manager-content').textContent='Loading…';try{await managerReview();}catch(e){status(e.message,true);}};const card=element('section');card.className='card';card.append(button,scheduleGroup(published.filter(s=>s.restaurant_id===restaurant.id)));managerHome.append(card);});
  $('restaurant').textContent='808 Manager Home';$('identity').textContent='Private manager access · All three restaurants';$('logo').hidden=true;$('portal').querySelector('nav').hidden=true;
- ['schedule','availability','time-off','manager'].forEach(id=>$(id).hidden=true);
+ ['my-schedule','schedule','availability','time-off','manager'].forEach(id=>$(id).hidden=true);
  managerHome.hidden=false;$('login').hidden=true;$('portal').hidden=false;$('status').hidden=true;
 }
 async function openPortal(){
